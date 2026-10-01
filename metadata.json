@@ -1,0 +1,8 @@
+{
+  "name": "Anganwadi Akka",
+  "description": "Empathetic voice-first Tamil guide for rural women to access essential government schemes in Tamil Nadu.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
