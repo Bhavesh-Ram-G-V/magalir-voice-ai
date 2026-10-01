@@ -31,3 +31,7 @@ Access the live published application here:
 
 ---
 
+## ♿ Accessibility & Inclusivity Features (WCAG 2.1)
+- **Voice-First Navigation:** Zero-UI interaction paradigm tailored for low-literacy users.
+- **Screen Reader Compatibility:** Accessible ARIA labels (`aria-label`, `aria-live="polite"`) for real-time status updates.
+- **High Contrast & Mobile-First Layout:** Visual elements comply with AA color contrast ratios for low-end display readability.
