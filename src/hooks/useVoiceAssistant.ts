@@ -33,6 +33,22 @@ declare global {
   }
 }
 
+// Helper to clean text for Text-to-Speech playback
+export function cleanTextForTTS(text: string): string {
+  if (!text) return '';
+  return text
+    // Strip markdown formatting (**, *, #, -, _, ~, `, >, brackets, parentheses)
+    .replace(/[*#_~`>[\]()]/g, ' ')
+    .replace(/^[\s-–—*•]+/gm, ' ')
+    // Strip emojis & unicode pictographs
+    .replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F700}-\u{1F77F}\u{1F780}-\u{1F7FF}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE0F}\u{1F1E6}-\u{1F1FF}]/gu, '')
+    // Strip special technical symbols
+    .replace(/[@$%^&+=\\|<>{}]/g, ' ')
+    // Normalize consecutive whitespace
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export function useVoiceAssistant() {
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -43,83 +59,13 @@ export function useVoiceAssistant() {
   const [lastResponseData, setLastResponseData] = useState<ChatResponse | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isSupported, setIsSupported] = useState(true);
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
 
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
   const currentUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const lastTranscriptRef = useRef('');
 
-  // Helper to ensure voices are asynchronously loaded via getVoices() and onvoiceschanged
-  const getLoadedVoices = useCallback((): Promise<SpeechSynthesisVoice[]> => {
-    return new Promise((resolve) => {
-      if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
-        resolve([]);
-        return;
-      }
-      const existing = window.speechSynthesis.getVoices();
-      if (existing && existing.length > 0) {
-        resolve(existing);
-        return;
-      }
-
-      // 1. ASYNC VOICE LOADING: Use speechSynthesis.onvoiceschanged to ensure voices are fully loaded
-      const handleVoicesChanged = () => {
-        const voices = window.speechSynthesis.getVoices();
-        if (voices.length > 0) {
-          window.speechSynthesis.removeEventListener('voiceschanged', handleVoicesChanged);
-          resolve(voices);
-        }
-      };
-
-      window.speechSynthesis.addEventListener('voiceschanged', handleVoicesChanged);
-
-      // Timeout fallback in case voices are already available or system doesn't emit voiceschanged
-      setTimeout(() => {
-        window.speechSynthesis.removeEventListener('voiceschanged', handleVoicesChanged);
-        resolve(window.speechSynthesis.getVoices() || []);
-      }, 700);
-    });
-  }, []);
-
-  // 2. NATIVE TAMIL VOICE SELECTION: Filter getVoices() specifically looking for native voices
-  // like 'Google தமிழ்', 'Microsoft Valluvar', 'Microsoft Heera', or 'ta-IN'
-  const selectTamilVoice = useCallback((voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null => {
-    if (!voices || voices.length === 0) return null;
-
-    // A. Priority to known native Tamil voices:
-    const nativeSpecific = voices.find((v) => {
-      const name = v.name || '';
-      return (
-        name.includes('Google தமிழ்') ||
-        name.includes('Microsoft Valluvar') ||
-        name.includes('Microsoft Heera') ||
-        name.includes('Valluvar') ||
-        name.includes('Heera')
-      );
-    });
-    if (nativeSpecific) return nativeSpecific;
-
-    // B. Match exact 'ta-IN' language:
-    const taInVoice = voices.find((v) => {
-      const lang = (v.lang || '').replace('_', '-').toLowerCase();
-      return lang === 'ta-in';
-    });
-    if (taInVoice) return taInVoice;
-
-    // C. Match any voice with 'ta' in lang or 'tamil' in name:
-    const generalTamil = voices.find((v) => {
-      const lang = (v.lang || '').toLowerCase();
-      const name = (v.name || '').toLowerCase();
-      return (
-        lang.includes('ta') ||
-        lang.startsWith('ta-') ||
-        name.includes('tamil') ||
-        name.includes('தமிழ்')
-      );
-    });
-    return generalTamil || null;
-  }, []);
-
-  // Check speech synthesis & recognition support on mount
+  // 1. RELIABLE TAMIL VOICE SELECTION: Listen for speechSynthesis.onvoiceschanged
   useEffect(() => {
     const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRec) {
@@ -127,10 +73,49 @@ export function useVoiceAssistant() {
     }
 
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      // Trigger voice pre-loading
-      window.speechSynthesis.getVoices();
+      const updateVoices = () => {
+        const loaded = window.speechSynthesis.getVoices();
+        if (loaded && loaded.length > 0) {
+          setVoices(loaded);
+        }
+      };
+
+      // Load initially
+      updateVoices();
+
+      // Listen for onvoiceschanged event
+      window.speechSynthesis.onvoiceschanged = updateVoices;
+
+      return () => {
+        if ('speechSynthesis' in window) {
+          window.speechSynthesis.onvoiceschanged = null;
+        }
+      };
     }
   }, []);
+
+  // Helper to find a reliable Tamil voice
+  const findTamilVoice = useCallback((): SpeechSynthesisVoice | null => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return null;
+
+    const available = window.speechSynthesis.getVoices();
+    const candidateList = available && available.length > 0 ? available : voices;
+
+    if (!candidateList || candidateList.length === 0) return null;
+
+    // Filter voice where voice.lang.toLowerCase().includes('ta') or voice.name.toLowerCase().includes('tamil')
+    const tamilVoice = candidateList.find((voice) => {
+      const lang = (voice.lang || '').toLowerCase();
+      const name = (voice.name || '').toLowerCase();
+      return (
+        lang.includes('ta') ||
+        name.includes('tamil') ||
+        name.includes('தமிழ்')
+      );
+    });
+
+    return tamilVoice || null;
+  }, [voices]);
 
   // Stop current audio playback
   const stopAudio = useCallback(() => {
@@ -141,7 +126,7 @@ export function useVoiceAssistant() {
   }, []);
 
   // Speak pure Tamil text using Web Speech Synthesis API
-  const speakText = useCallback(async (text: string, onFinish?: () => void) => {
+  const speakText = useCallback((text: string, onFinish?: () => void) => {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
       onFinish?.();
       return;
@@ -150,29 +135,22 @@ export function useVoiceAssistant() {
     // Cancel ongoing speech
     window.speechSynthesis.cancel();
 
-    // Clean text: pure spoken Tamil, no asterisks, no bullets
-    const cleanText = text.replace(/[*#_~`[\]()]/g, ' ').replace(/\s+/g, ' ').trim();
-    if (!cleanText) {
+    // 1. CLEAN TEXT FOR TTS: Strips out markdown, emojis, and special symbols
+    const cleanedText = cleanTextForTTS(text);
+    if (!cleanedText) {
       onFinish?.();
       return;
     }
 
-    // 1. ASYNC VOICE LOADING: Ensure voices are fully loaded before speaking
-    const availableVoices = await getLoadedVoices();
+    const utterance = new SpeechSynthesisUtterance(cleanedText);
 
-    const utterance = new SpeechSynthesisUtterance(cleanText);
-
-    // 2. NATIVE TAMIL VOICE SELECTION: Filter to find a voice where voice.lang includes 'ta' or 'ta-IN'
-    // Specifically look for 'Google தமிழ்', 'Microsoft Valluvar', 'Microsoft Heera', or 'ta-IN'
-    const tamilVoice = selectTamilVoice(availableVoices);
-
-    // 3. ASSIGN VOICE: Explicitly set utterance.voice = tamilVoice when a Tamil voice is found.
-    // If no Tamil voice is installed on the system, fall back cleanly to utterance.lang = 'ta-IN'.
+    // 2. RELIABLE TAMIL VOICE SELECTION: Find voice and explicitly assign utterance.voice = tamilVoice
+    const tamilVoice = findTamilVoice();
     if (tamilVoice) {
       utterance.voice = tamilVoice;
     }
 
-    // 4. NATURAL PACE: Set utterance.rate = 0.85 and utterance.pitch = 1.0 so it speaks clearly and naturally
+    // 3. VOICE PARAMETERS: Set utterance.lang = 'ta-IN', utterance.rate = 0.85, and utterance.pitch = 1.0
     utterance.lang = 'ta-IN';
     utterance.rate = 0.85;
     utterance.pitch = 1.0;
@@ -194,7 +172,7 @@ export function useVoiceAssistant() {
 
     currentUtteranceRef.current = utterance;
     window.speechSynthesis.speak(utterance);
-  }, [getLoadedVoices, selectTamilVoice]);
+  }, [findTamilVoice]);
 
   // Send message to Gemini backend
   const processMessage = useCallback(
